@@ -195,6 +195,41 @@ func (b *WorkerBuilder) slurmdContainer(nodeset *slinkyv1beta1.NodeSet, controll
 
 	cpus, memory := b.getResourceLimits(&nodeset.Spec)
 
+	// Slurm only serves /livez//readyz from 25.11 onward; on older versions the
+	// HTTP probes can never pass and the kubelet kills the daemon in a loop, so
+	// allow opting out per workload (common.AnnotationDisableHealthProbes).
+	var startupProbe, readinessProbe, livenessProbe *corev1.Probe
+	if !common.DisableHealthProbes(nodeset) {
+		startupProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmLivez,
+					Port: intstr.FromString(labels.WorkerApp),
+				},
+			},
+			FailureThreshold: 6,
+			PeriodSeconds:    10,
+		}
+		livenessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmLivez,
+					Port: intstr.FromString(labels.WorkerApp),
+				},
+			},
+			FailureThreshold: 6,
+			PeriodSeconds:    10,
+		}
+		readinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmReadyz,
+					Port: intstr.FromString(labels.WorkerApp),
+				},
+			},
+		}
+	}
+
 	opts := common.ContainerOpts{
 		Base: corev1.Container{
 			Name: labels.WorkerApp,
@@ -218,34 +253,9 @@ func (b *WorkerBuilder) slurmdContainer(nodeset *slinkyv1beta1.NodeSet, controll
 				},
 			},
 			Ports: ports,
-			StartupProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmLivez,
-						Port: intstr.FromString(labels.WorkerApp),
-					},
-				},
-				FailureThreshold: 6,
-				PeriodSeconds:    10,
-			},
-			LivenessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmLivez,
-						Port: intstr.FromString(labels.WorkerApp),
-					},
-				},
-				FailureThreshold: 6,
-				PeriodSeconds:    10,
-			},
-			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmReadyz,
-						Port: intstr.FromString(labels.WorkerApp),
-					},
-				},
-			},
+			StartupProbe:   startupProbe,
+			LivenessProbe:  livenessProbe,
+			ReadinessProbe: readinessProbe,
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: ptr.To(true),
 				Capabilities: &corev1.Capabilities{

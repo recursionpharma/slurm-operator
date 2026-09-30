@@ -161,7 +161,7 @@ func (b *ControllerBuilder) controllerPodTemplate(controller *slinkyv1beta1.Cont
 		Base: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false),
 			Containers: []corev1.Container{
-				b.slurmctldContainer(spec.Slurmctld.Container, controller.ClusterName()),
+				b.slurmctldContainer(spec.Slurmctld.Container, controller.ClusterName(), common.DisableHealthProbes(controller)),
 			},
 			InitContainers: func() []corev1.Container {
 				var initContainers []corev1.Container
@@ -259,7 +259,42 @@ func clusterSpoolDir(clustername string) string {
 	return path.Join(common.SlurmctldSpoolDir, clustername)
 }
 
-func (b *ControllerBuilder) slurmctldContainer(merge corev1.Container, clusterName string) corev1.Container {
+func (b *ControllerBuilder) slurmctldContainer(merge corev1.Container, clusterName string, disableProbes bool) corev1.Container {
+	// Slurm only serves /livez//readyz from 25.11 onward; on older versions the
+	// HTTP probes can never pass and the kubelet kills the daemon in a loop, so
+	// allow opting out per workload (common.AnnotationDisableHealthProbes).
+	var startupProbe, readinessProbe, livenessProbe *corev1.Probe
+	if !disableProbes {
+		startupProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmLivez,
+					Port: intstr.FromString(labels.ControllerApp),
+				},
+			},
+			FailureThreshold: 6,
+			PeriodSeconds:    10,
+		}
+		readinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmReadyz,
+					Port: intstr.FromString(labels.ControllerApp),
+				},
+			},
+		}
+		livenessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: common.SlurmLivez,
+					Port: intstr.FromString(labels.ControllerApp),
+				},
+			},
+			FailureThreshold: 6,
+			PeriodSeconds:    10,
+		}
+	}
+
 	opts := common.ContainerOpts{
 		Base: corev1.Container{
 			Name: labels.ControllerApp,
@@ -270,34 +305,9 @@ func (b *ControllerBuilder) slurmctldContainer(merge corev1.Container, clusterNa
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
-			StartupProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmLivez,
-						Port: intstr.FromString(labels.ControllerApp),
-					},
-				},
-				FailureThreshold: 6,
-				PeriodSeconds:    10,
-			},
-			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmReadyz,
-						Port: intstr.FromString(labels.ControllerApp),
-					},
-				},
-			},
-			LivenessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: common.SlurmLivez,
-						Port: intstr.FromString(labels.ControllerApp),
-					},
-				},
-				FailureThreshold: 6,
-				PeriodSeconds:    10,
-			},
+			StartupProbe:   startupProbe,
+			ReadinessProbe: readinessProbe,
+			LivenessProbe:  livenessProbe,
 			SecurityContext: &corev1.SecurityContext{
 				RunAsNonRoot: ptr.To(true),
 				RunAsUser:    ptr.To(common.SlurmUserUid),

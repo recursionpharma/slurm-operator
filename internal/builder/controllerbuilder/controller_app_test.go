@@ -314,3 +314,30 @@ func TestBuilder_BuildController_configHash(t *testing.T) {
 		})
 	}
 }
+
+func TestBuilder_BuildController_healthProbeOptOut(t *testing.T) {
+	probes := func(t *testing.T, annotated bool) {
+		t.Helper()
+		cr := &slinkyv1beta1.Controller{
+			ObjectMeta: metav1.ObjectMeta{Name: "slurm"},
+			Spec:       slinkyv1beta1.ControllerSpec{JwtKeyRef: &corev1.SecretKeySelector{}},
+		}
+		if annotated {
+			cr.Annotations = map[string]string{common.AnnotationDisableHealthProbes: "true"}
+		}
+		sts, err := New(fake.NewFakeClient()).BuildController(cr)
+		require.NoError(t, err)
+		c := sts.Spec.Template.Spec.Containers[0]
+		if annotated {
+			require.Nil(t, c.StartupProbe, "expected no startup probe when opted out")
+			require.Nil(t, c.LivenessProbe, "expected no liveness probe when opted out")
+			require.Nil(t, c.ReadinessProbe, "expected no readiness probe when opted out")
+		} else {
+			require.NotNil(t, c.StartupProbe, "expected startup probe by default")
+			require.NotNil(t, c.LivenessProbe, "expected liveness probe by default")
+			require.NotNil(t, c.ReadinessProbe, "expected readiness probe by default")
+		}
+	}
+	t.Run("default keeps probes", func(t *testing.T) { probes(t, false) })
+	t.Run("annotation drops probes", func(t *testing.T) { probes(t, true) })
+}
